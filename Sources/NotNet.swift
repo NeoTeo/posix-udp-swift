@@ -1,0 +1,3 @@
+func sayArs() {
+    print("Ars!")
+}
