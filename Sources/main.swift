@@ -21,13 +21,13 @@ let ntohll = isLittleEndian ? _OSSwapInt64 : { $0 }
 
 let INETADDRESS_ANY = in_addr(s_addr: 0)
 
-var sockAddress = sockaddr_in(
-    sin_len:    __uint8_t(sizeof(sockaddr_in)),
-    sin_family: sa_family_t(AF_INET),
-    sin_port:   htons(4242),
-    sin_addr:   in_addr(s_addr: 0),
-    sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
-)
+//var sockAddress = sockaddr_in(
+//    sin_len:    __uint8_t(sizeof(sockaddr_in)),
+//    sin_family: sa_family_t(AF_INET),
+//    sin_port:   htons(4242),
+//    sin_addr:   in_addr(s_addr: 0),
+//    sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
+//)
 
 var responseSource: dispatch_source_t?
 
@@ -138,6 +138,44 @@ func receiver(address: String, port: UInt16) -> dispatch_source_t? {
     return newResponseSource
 }
 
+func sender(address: String, port: UInt16) {
+    
+    var sockAddress = sockaddr_in(
+        sin_len:    __uint8_t(sizeof(sockaddr_in)),
+        sin_family: sa_family_t(AF_INET),
+        sin_port:   htons(port),
+        sin_addr:   in_addr(s_addr: 0),
+        sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
+    )
+
+    /// inet_pton turns a text presentable ip to a network/binary representation
+    address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
+
+    /// A file descriptor Int32
+    let sockFd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    
+    guard sockFd >= 0  else {
+        let errmsg = String.fromCString(strerror(errno))
+        print("Error: Could not create socket. \(errmsg)")
+        return
+    }
+
+    let outData = Array("Greetings earthling".utf8)
+
+    let sent = withUnsafePointer(&sockAddress) {
+        sendto(sockFd, outData, outData.count, 0, UnsafePointer($0), socklen_t(sockAddress.sin_len))
+    }
+    if sent == -1 {
+        let errmsg = String.fromCString(strerror(errno))
+        print("sendto failed: \(errno) \(errmsg)")
+        return
+    }
+    
+    print("Just sent \(sent) bytes as \(outData)")
+    
+    close(sockFd)
+}
+
 let ipPrefix    = "--ip="
 let portPrefix  = "--port="
 
@@ -170,11 +208,11 @@ switch target {
     case "server":
         print("Server starting")
         responseSource = receiver(address, port: port)
+        CFRunLoopRun()
     case "client":
         print("Client starting")
-        //sender()
+        sender(address, port: port)
     default:
         print("Usage: SockIt (server|client) [port] [ip]")
 }
 
-CFRunLoopRun()
