@@ -213,6 +213,6 @@ switch target {
         print("Client starting")
         sender(address, port: port)
     default:
-        print("Usage: SockIt (server|client) [port] [ip]")
+        print("Usage: SockIt (server|client) [--port=<portnumber>] [--ip=<address>]")
 }
 
