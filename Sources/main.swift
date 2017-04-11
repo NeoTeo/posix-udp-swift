@@ -11,9 +11,12 @@ public protocol SocketAddress {
 /// Workaround Swift not having access to the C macros.
 let isLittleEndian = Int(OSHostByteOrder()) == OSLittleEndian
 
+/// Host to Network byte order small (2 bytes), large (4 bytes), large large (8 bytes)
 let htons  = isLittleEndian ? _OSSwapInt16 : { $0 }
 let htonl  = isLittleEndian ? _OSSwapInt32 : { $0 }
 let htonll = isLittleEndian ? _OSSwapInt64 : { $0 }
+
+/// Network byte order to host, small, etc.
 let ntohs  = isLittleEndian ? _OSSwapInt16 : { $0 }
 let ntohl  = isLittleEndian ? _OSSwapInt32 : { $0 }
 let ntohll = isLittleEndian ? _OSSwapInt64 : { $0 }
@@ -29,13 +32,12 @@ let INETADDRESS_ANY = in_addr(s_addr: 0)
 //    sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
 //)
 
-var responseSource: dispatch_source_t?
+var responseSource: DispatchSourceRead? //dispatch_source_t?
 
-/// So htons casts to UInt16 and then turns into big endian (which is network byte order)
-//let small = UInt16(1234)
-//let swapped = small.bigEndian
 
-func receiver(address: String, port: UInt16) -> dispatch_source_t? {
+
+//func receiver(address: String, port: UInt16) -> dispatch_source_t? {
+func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
     /**
     1) Create a socket.
     2) Bind the socket.
@@ -43,7 +45,8 @@ func receiver(address: String, port: UInt16) -> dispatch_source_t? {
     4) In a loop/separate thread/event listen for incoming packets.
     */
     var sockAddress = sockaddr_in(
-        sin_len:    __uint8_t(sizeof(sockaddr_in)),
+//        sin_len:    __uint8_t(sizeof(sockaddr_in)),
+        sin_len:    __uint8_t(MemoryLayout<sockaddr_in>.size),
         sin_family: sa_family_t(AF_INET),
         sin_port:   htons(port),
         sin_addr:   in_addr(s_addr: 0),
@@ -51,24 +54,26 @@ func receiver(address: String, port: UInt16) -> dispatch_source_t? {
     )
 
     /// inet_pton turns a text presentable ip to a network/binary representation
-    address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
+    _ = address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
     
     /// A socket file descriptor
     let sockFd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)
     
     guard sockFd >= 0  else {
-        let errmsg = String.fromCString(strerror(errno))
+        let errmsg = String(cString: strerror(errno))
         print("Error: Could not create socket. \(errmsg)")
         return nil
     }
     
     /// Bind the socket to the address
-    let bindSuccess = withUnsafePointer(&sockAddress) {
-        bind(sockFd, UnsafePointer($0), socklen_t( sizeofValue(sockAddress)))
+    let bindSuccess = withUnsafePointer(to: &sockAddress) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1, { ptrSockAddress in
+            bind(sockFd, ptrSockAddress, socklen_t( MemoryLayout<sockaddr>.size) )
+        })
     }
     
     guard bindSuccess == 0 else {
-        let errmsg = String.fromCString(strerror(errno))
+        let errmsg = String(cString: strerror(errno))
         print("Error: Could not bind socket! \(errmsg)")
         return nil
     }
@@ -98,42 +103,38 @@ func receiver(address: String, port: UInt16) -> dispatch_source_t? {
 //    }
     
     /// Create a GCD thread that can listen for network events.
-    guard let newResponseSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, UInt(sockFd), 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)) else {
-        let errmsg = String.fromCString(strerror(errno))
-        print("dispatch_source_create failed. \(errmsg)")
-        close(sockFd)
-        return nil
-    }
+    let newResponseSource = DispatchSource.makeReadSource(fileDescriptor: sockFd)
     
-    /// Register the event handler for cancellation.
-    dispatch_source_set_cancel_handler(newResponseSource) {
-        let errmsg = String.fromCString(strerror(errno))
+    newResponseSource.setCancelHandler {
+        let errmsg = String(cString: strerror(errno))
         print("Cancel handler \(errmsg)")
         close(sockFd)
     }
     
-    
-    /// Register the event handler for incoming packets.
-    dispatch_source_set_event_handler(newResponseSource) {
+    newResponseSource.setEventHandler {
+        print("event!")
         guard let source = responseSource else { return }
         
         var socketAddress = sockaddr_storage()
-        var socketAddressLength = socklen_t(sizeof(sockaddr_storage.self))
-        let response = [UInt8](count: 4096, repeatedValue: 0)
-        let UDPSocket = Int32(dispatch_source_get_handle(source))
-
-        let bytesRead = withUnsafeMutablePointer(&socketAddress) {
-            recvfrom(UDPSocket, UnsafeMutablePointer<Void>(response), response.count, 0, UnsafeMutablePointer($0), &socketAddressLength)
+        var socketAddressLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let response = [UInt8](repeating: 0, count: 4096)
+        
+        let UDPSocket = Int32(source.handle)
+        
+        let bytesRead = withUnsafeMutablePointer(to: &socketAddress) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { ptrSockAddr in
+                recvfrom(UDPSocket, UnsafeMutableRawPointer(mutating: response), response.count, 0, ptrSockAddr, &socketAddressLength)
+            }
         }
-
+        
         let dataRead = response[0..<bytesRead]
         print("read \(bytesRead) bytes: \(dataRead)")
-        if let dataString = String(bytes: dataRead, encoding: NSUTF8StringEncoding) {
+        if let dataString = String(bytes: dataRead, encoding: String.Encoding.utf8) {
             print("The message was: \(dataString)")
         }
     }
     
-    dispatch_resume(newResponseSource)
+    newResponseSource.resume()
     
     return newResponseSource
 }
@@ -141,7 +142,7 @@ func receiver(address: String, port: UInt16) -> dispatch_source_t? {
 func sender(address: String, port: UInt16) {
     
     var sockAddress = sockaddr_in(
-        sin_len:    __uint8_t(sizeof(sockaddr_in)),
+        sin_len:    __uint8_t( MemoryLayout<sockaddr_in>.size ),
         sin_family: sa_family_t(AF_INET),
         sin_port:   htons(port),
         sin_addr:   in_addr(s_addr: 0),
@@ -149,24 +150,27 @@ func sender(address: String, port: UInt16) {
     )
 
     /// inet_pton turns a text presentable ip to a network/binary representation
-    address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
+    _ = address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
 
     /// A file descriptor Int32
     let sockFd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)
     
     guard sockFd >= 0  else {
-        let errmsg = String.fromCString(strerror(errno))
+        let errmsg = String(cString: strerror(errno))
         print("Error: Could not create socket. \(errmsg)")
         return
     }
 
     let outData = Array("Greetings earthling".utf8)
 
-    let sent = withUnsafePointer(&sockAddress) {
-        sendto(sockFd, outData, outData.count, 0, UnsafePointer($0), socklen_t(sockAddress.sin_len))
+    let sent = withUnsafePointer(to: &sockAddress) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { ptrSockAddr in
+            sendto(sockFd, outData, outData.count, 0, ptrSockAddr, socklen_t(sockAddress.sin_len))
+        }
     }
+    
     if sent == -1 {
-        let errmsg = String.fromCString(strerror(errno))
+        let errmsg = String(cString: strerror(errno))
         print("sendto failed: \(errno) \(errmsg)")
         return
     }
@@ -183,35 +187,48 @@ var target      = "none"
 var port        = UInt16(4242)
 var address     = "127.0.0.1"
 
-for argNum in 1..<Process.arguments.count {
-    switch Process.arguments[argNum] {
+for arg in CommandLine.arguments {
+    
+    switch arg {
+        
         case "server":
-            target = "server"  
+            target = "server"
+        
         case "client":
-            target = "client"  
+            target = "client"
+        
         case (let portval) where portval.hasPrefix(portPrefix):
-            if let prefixRange = portval.rangeOfString(portPrefix) {
-                port = UInt16(portval.substringFromIndex(prefixRange.endIndex))!
+
+            if let prefixRange = portval.range(of: portPrefix) {
+                
+                port = UInt16(portval.substring(from: prefixRange.upperBound))!
+                
                 print("port defined as \(port)")
             }
+        
         case (let ipval) where ipval.hasPrefix(ipPrefix):
-            if let prefixRange = ipval.rangeOfString(ipPrefix) {
-                address = ipval.substringFromIndex(prefixRange.endIndex)
+
+            if let prefixRange = ipval.range(of: ipPrefix) {
+
+                address = ipval.substring(from: prefixRange.upperBound)
                 print("ip address defined as \(address)")
             }
+        
         default:
-            print("Unknown argument: \(Process.arguments[argNum])") 
+ 
+            print("Unknown argument: \(CommandLine.argc): \(CommandLine.arguments)")
+
     }
 }
 
 switch target {
     case "server":
         print("Server starting")
-        responseSource = receiver(address, port: port)
+        responseSource = receiver(address: address, port: port)
         CFRunLoopRun()
     case "client":
         print("Client starting")
-        sender(address, port: port)
+        sender(address: address, port: port)
     default:
         print("Usage: SockIt (server|client) [--port=<portnumber>] [--ip=<address>]")
 }
