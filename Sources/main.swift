@@ -116,7 +116,7 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
         guard let source = responseSource else { return }
         
         let addr = UnsafeMutablePointer<sockaddr_storage>.allocate(capacity: 1)
-        let addrSockAddr = UnsafeMutablePointer<sockaddr>(OpaquePointer(addr))
+        let ptrSockAddr = UnsafeMutablePointer<sockaddr>(OpaquePointer(addr))
         var socketAddressLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
         let response = [UInt8](repeating: 0, count: 4096)
         let UDPSocket = Int32(source.handle)
@@ -125,7 +125,7 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
                                  UnsafeMutableRawPointer(mutating: response),
                                  response.count,
                                  0,
-                                 addrSockAddr,
+                                 ptrSockAddr,
                                  &socketAddressLength)
         
         let dataRead = response[0..<bytesRead]
@@ -163,12 +163,15 @@ func sender(address: String, port: UInt16) {
     }
 
     let outData = Array("Greetings earthling".utf8)
+    let addr = UnsafeMutablePointer<sockaddr_in>(&sockAddress)
+    let ptrSockAddr = UnsafeMutablePointer<sockaddr>(OpaquePointer(addr))
 
-    let sent = withUnsafePointer(to: &sockAddress) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { ptrSockAddr in
-            sendto(sockFd, outData, outData.count, 0, ptrSockAddr, socklen_t(sockAddress.sin_len))
-        }
-    }
+    let sent = sendto(sockFd,
+                    outData,
+                    outData.count,
+                    0,
+                    ptrSockAddr,
+                    socklen_t(sockAddress.sin_len))
     
     if sent == -1 {
         let errmsg = String(cString: strerror(errno))
