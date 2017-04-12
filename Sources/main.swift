@@ -115,17 +115,18 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
         print("event!")
         guard let source = responseSource else { return }
         
-        var socketAddress = sockaddr_storage()
+        let addr = UnsafeMutablePointer<sockaddr_storage>.allocate(capacity: 1)
+        let addrSockAddr = UnsafeMutablePointer<sockaddr>(OpaquePointer(addr))
         var socketAddressLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
         let response = [UInt8](repeating: 0, count: 4096)
-        
         let UDPSocket = Int32(source.handle)
         
-        let bytesRead = withUnsafeMutablePointer(to: &socketAddress) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { ptrSockAddr in
-                recvfrom(UDPSocket, UnsafeMutableRawPointer(mutating: response), response.count, 0, ptrSockAddr, &socketAddressLength)
-            }
-        }
+        let bytesRead = recvfrom(UDPSocket,
+                                 UnsafeMutableRawPointer(mutating: response),
+                                 response.count,
+                                 0,
+                                 addrSockAddr,
+                                 &socketAddressLength)
         
         let dataRead = response[0..<bytesRead]
         print("read \(bytesRead) bytes: \(dataRead)")
@@ -187,7 +188,12 @@ var target      = "none"
 var port        = UInt16(4242)
 var address     = "127.0.0.1"
 
-for arg in CommandLine.arguments {
+/// Strip app name.
+guard let appPath = CommandLine.arguments.first else { fatalError("Fatal! No app name.") }
+
+let appName = appPath.components(separatedBy: "/").last ?? "SockIt"
+
+for arg in CommandLine.arguments.dropFirst() {
     
     switch arg {
         
@@ -230,6 +236,6 @@ switch target {
         print("Client starting")
         sender(address: address, port: port)
     default:
-        print("Usage: SockIt (server|client) [--port=<portnumber>] [--ip=<address>]")
+        print("Usage: \(appName) (server|client) [--port=<portnumber>] [--ip=<address>]")
 }
 
