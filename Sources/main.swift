@@ -1,5 +1,4 @@
 
-
 import Foundation /// Used for CFRunLoop
 import Darwin
 import Dispatch
@@ -10,15 +9,32 @@ public protocol SocketAddress {
 
 let INETADDRESS_ANY = in_addr(s_addr: 0)
 
-//var sockAddress = sockaddr_in(
-//    sin_len:    __uint8_t(sizeof(sockaddr_in)),
-//    sin_family: sa_family_t(AF_INET),
-//    sin_port:   htons(4242),
-//    sin_addr:   in_addr(s_addr: 0),
-//    sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
-//)
+var responseSource: DispatchSourceRead?
+typealias SocketFd = Int32
 
-var responseSource: DispatchSourceRead? //dispatch_source_t?
+func getSocket(address: String, port: UInt16) -> (sockaddr_in, SocketFd)? {
+    
+    var sockAddress = sockaddr_in(
+        sin_len:    __uint8_t(MemoryLayout<sockaddr_in>.size),
+        sin_family: sa_family_t(AF_INET),
+        sin_port:   port.bigEndian,
+        sin_addr:   in_addr(s_addr: 0),
+        sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
+    )
+    
+    /// inet_pton turns a text presentable ip to a network/binary representation
+    _ = address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
+
+    /// A socket file descriptor
+    let sockFd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    
+    guard sockFd >= 0  else {
+        print("Error: Could not create socket. \(String(cString: strerror(errno)))")
+        return nil
+    }
+
+    return (sockAddress, sockFd)
+}
 
 func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
     /**
@@ -27,25 +43,10 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
     3) Connect the socket (optional).
     4) In a loop/separate thread/event listen for incoming packets.
     */
-    var sockAddress = sockaddr_in(
-        sin_len:    __uint8_t(MemoryLayout<sockaddr_in>.size),
-        sin_family: sa_family_t(AF_INET),
-        sin_port:   port.bigEndian,
-        sin_addr:   in_addr(s_addr: 0),
-        sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
-    )
-
-    /// inet_pton turns a text presentable ip to a network/binary representation
-    _ = address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
     
-    /// A socket file descriptor
-    let sockFd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)
-    
-    guard sockFd >= 0  else {
-        let errmsg = String(cString: strerror(errno))
-        print("Error: Could not create socket. \(errmsg)")
-        return nil
-    }
+    /// Connect. Since we're using UDP this isn't actually a connection but it does save us
+    /// from having to restate the address when we want to use the socket.
+    guard case (var sockAddress, let sockFd)? = getSocket(address: address, port: port) else { return nil }
     
     /// Bind the socket to the address
     let bindSuccess = withUnsafePointer(to: &sockAddress) {
@@ -59,11 +60,8 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
         print("Error: Could not bind socket! \(errmsg)")
         return nil
     }
-    
-    /// Connect. Since we're using UDP this isn't actually a connection but it does save us
-    /// from having to restate the address when we want to use the socket.
-    
-/** 
+
+/**
     Enabling this causes the server to not receive any messages and appears to dump/deny any
     connections on the sockFd because when attempting to connect to it via the
     
@@ -73,17 +71,17 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
     the server, whereas when we don't call connect the nc command stays active and allows 
     subsequent messages to be sent.
     This issue took a good while to discover. :(
+
+    
+    let connectSuccess = withUnsafePointer(&sockAddress) {
+        connect(sockFd, UnsafePointer($0), socklen_t( sizeofValue(sockAddress)))
+    }
+    guard connectSuccess == 0 else {
+        let errmsg = String.fromCString(strerror(errno))    
+        print("Could not connect! \(errmsg)")
+        return nil
+    }
 */
-    
-//    let connectSuccess = withUnsafePointer(&sockAddress) {
-//        connect(sockFd, UnsafePointer($0), socklen_t( sizeofValue(sockAddress)))
-//    }
-//    guard connectSuccess == 0 else {
-//        let errmsg = String.fromCString(strerror(errno))    
-//        print("Could not connect! \(errmsg)")
-//        return nil
-//    }
-    
     /// Create a GCD thread that can listen for network events.
     let newResponseSource = DispatchSource.makeReadSource(fileDescriptor: sockFd)
     
@@ -110,7 +108,7 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
                                  ptrSockAddr,
                                  &socketAddressLength)
         
-        let dataRead = response[0..<bytesRead]
+        let dataRead = response[0 ..< bytesRead]
         print("read \(bytesRead) bytes: \(dataRead)")
         if let dataString = String(bytes: dataRead, encoding: String.Encoding.utf8) {
             print("The message was: \(dataString)")
@@ -124,26 +122,8 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
 
 func sender(address: String, port: UInt16) {
     
-    var sockAddress = sockaddr_in(
-        sin_len:    __uint8_t( MemoryLayout<sockaddr_in>.size ),
-        sin_family: sa_family_t(AF_INET),
-        sin_port:   port.bigEndian,
-        sin_addr:   in_addr(s_addr: 0),
-        sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
-    )
-
-    /// inet_pton turns a text presentable ip to a network/binary representation
-    _ = address.withCString({ cs in inet_pton(AF_INET, cs, &sockAddress.sin_addr) })
-
-    /// A file descriptor Int32
-    let sockFd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)
-    
-    guard sockFd >= 0  else {
-        let errmsg = String(cString: strerror(errno))
-        print("Error: Could not create socket. \(errmsg)")
-        return
-    }
-
+    guard case (var sockAddress, let sockFd)? = getSocket(address: address, port: port) else { return }
+ 
     let outData = Array("Greetings earthling".utf8)
     let addr = UnsafeMutablePointer<sockaddr_in>(&sockAddress)
     let ptrSockAddr = UnsafeMutablePointer<sockaddr>(OpaquePointer(addr))
