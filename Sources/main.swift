@@ -8,20 +8,6 @@ public protocol SocketAddress {
     
 }
 
-/// Workaround Swift not having access to the C macros.
-let isLittleEndian = Int(OSHostByteOrder()) == OSLittleEndian
-
-/// Host to Network byte order small (2 bytes), large (4 bytes), large large (8 bytes)
-let htons  = isLittleEndian ? _OSSwapInt16 : { $0 }
-let htonl  = isLittleEndian ? _OSSwapInt32 : { $0 }
-let htonll = isLittleEndian ? _OSSwapInt64 : { $0 }
-
-/// Network byte order to host, small, etc.
-let ntohs  = isLittleEndian ? _OSSwapInt16 : { $0 }
-let ntohl  = isLittleEndian ? _OSSwapInt32 : { $0 }
-let ntohll = isLittleEndian ? _OSSwapInt64 : { $0 }
-
-
 let INETADDRESS_ANY = in_addr(s_addr: 0)
 
 //var sockAddress = sockaddr_in(
@@ -34,9 +20,6 @@ let INETADDRESS_ANY = in_addr(s_addr: 0)
 
 var responseSource: DispatchSourceRead? //dispatch_source_t?
 
-
-
-//func receiver(address: String, port: UInt16) -> dispatch_source_t? {
 func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
     /**
     1) Create a socket.
@@ -45,10 +28,9 @@ func receiver(address: String, port: UInt16) -> DispatchSourceRead? {
     4) In a loop/separate thread/event listen for incoming packets.
     */
     var sockAddress = sockaddr_in(
-//        sin_len:    __uint8_t(sizeof(sockaddr_in)),
         sin_len:    __uint8_t(MemoryLayout<sockaddr_in>.size),
         sin_family: sa_family_t(AF_INET),
-        sin_port:   htons(port),
+        sin_port:   port.bigEndian,
         sin_addr:   in_addr(s_addr: 0),
         sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
     )
@@ -145,7 +127,7 @@ func sender(address: String, port: UInt16) {
     var sockAddress = sockaddr_in(
         sin_len:    __uint8_t( MemoryLayout<sockaddr_in>.size ),
         sin_family: sa_family_t(AF_INET),
-        sin_port:   htons(port),
+        sin_port:   port.bigEndian,
         sin_addr:   in_addr(s_addr: 0),
         sin_zero:   ( 0, 0, 0, 0, 0, 0, 0, 0 )
     )
